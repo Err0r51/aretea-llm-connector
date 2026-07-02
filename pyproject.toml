@@ -1,0 +1,75 @@
+[project]
+name = "aretea-drive-mcp"
+version = "0.1.0"
+description = "Read-only Google Drive MCP connector for Aretea (Claude web). Service-account data hop, identity-only client hop."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # --- MCP server + client-hop auth ---
+    # FastMCP 3.x: GoogleProvider, OAuthProxy, native JWT minting, AsyncKeyValue storage, middleware.
+    # Pin >=3.4.2 — 2.x has unpatched CVEs; 3.4.1 floors starlette>=1.0.1 (CVE-2026-48710).
+    "fastmcp>=3.4.2",
+    "pydantic[email]>=2.11",
+    "pydantic-settings>=2.14",
+    # AsyncKeyValue storage backend for FastMCP client_storage (FileTreeStore on the Railway volume).
+    "py-key-value-aio>=0.4.4,<0.5",
+    # Fernet at-rest encryption for the token store (imported directly in auth/store.py).
+    "cryptography>=44",
+    # --- Drive hop (service account, read-only) ---
+    "google-api-python-client>=2.198,<3",
+    "google-auth>=2.55,<3",
+    "google-auth-httplib2>=0.4,<1",
+    # sync->async bridge for the blocking Google client (also a transitive FastMCP dep; pinned as we import it).
+    "anyio>=4,<5",
+    # --- observability ---
+    "structlog>=25.1",
+    # --- ASGI server ---
+    "uvicorn[standard]>=0.35",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.15.20",
+    "mypy>=1.14",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=6.0",
+    # respx mocks httpx (FastMCP<->Google OIDC hop). The google-api-python-client uses httplib2 —
+    # mock that with the library's built-in googleapiclient.http.HttpMock (no dependency).
+    "respx>=0.22",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aretea_drive_mcp"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["aretea_drive_mcp", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "S"]
+# S101 (assert): our security invariants (no-DWD, driveId wall) are expressed as asserts by design;
+# they are also compiled out under `python -O`, so the runtime checks in code raise explicitly instead.
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+# google-api-python-client / httplib2 ship partial or no stubs.
+[[tool.mypy.overrides]]
+module = ["googleapiclient.*", "google_auth_httplib2.*", "httplib2.*", "key_value.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
