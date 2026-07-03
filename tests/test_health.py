@@ -60,6 +60,8 @@ def test_health_is_public_and_well_formed_on_bare_app() -> None:
         resp = client.get("/health")
     assert resp.status_code == 200
     assert set(resp.json()) == PAYLOAD_KEYS
+    # Never let an edge cache pin a stale commit SHA — /health must reflect the live deploy.
+    assert resp.headers["cache-control"] == "no-store"
 
 
 def _auth_app(tmp_path: Path) -> FastMCP:

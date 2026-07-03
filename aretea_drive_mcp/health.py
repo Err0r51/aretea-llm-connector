@@ -69,4 +69,6 @@ def register_health(app: FastMCP) -> None:
 
     @app.custom_route("/health", methods=["GET"], include_in_schema=False)
     async def health(_request: Request) -> JSONResponse:
-        return JSONResponse(health_payload())
+        # no-store: the payload names the *currently live* commit SHA; a cached edge response
+        # would misreport "what's live == what was released" (the PRD 3 traceability contract).
+        return JSONResponse(health_payload(), headers={"Cache-Control": "no-store"})
