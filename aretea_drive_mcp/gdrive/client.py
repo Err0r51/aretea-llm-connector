@@ -20,10 +20,14 @@ from typing import Any, cast
 
 import anyio
 import httplib2
+import structlog
 from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from aretea_drive_mcp.gdrive.credentials import build_credentials
+
+log = structlog.get_logger("gdrive.client")
 
 # Native Google mime types we extract specially.
 MIME_DOC = "application/vnd.google-apps.document"
@@ -37,9 +41,31 @@ FILE_FIELDS = (
 
 BINARY_PLACEHOLDER = "[binary — not text-extracted in v1]"
 
+# Drive's REST files.export endpoint caps plain-text export at ~10 MB and returns a 403
+# `exportSizeLimitExceeded` before any bytes. We surface that as stated content (like
+# BINARY_PLACEHOLDER) so a huge Doc degrades gracefully instead of raising (AC11 — never silent).
+EXPORT_TOO_LARGE_PLACEHOLDER = (
+    "[truncated — this Google Doc exceeds Drive's 10 MB plain-text export limit and could not be "
+    "exported as text; open it in Google Docs to read the full content]"
+)
+
 
 class DriveBoundaryError(RuntimeError):
     """Raised when a file's driveId is not the AI-Visible drive — refuse before returning it."""
+
+
+def _is_export_size_error(err: HttpError) -> bool:
+    """True iff `err` is Drive's 403 ``exportSizeLimitExceeded`` (Doc too large to export as text).
+
+    Matches on the machine reason token (stable, in ``error_details``) with the English message as a
+    weak fallback — never on the bare 403 status, so genuine permission/boundary 403s still refuse.
+    """
+    details = getattr(err, "error_details", None)
+    if isinstance(details, list) and any(
+        isinstance(d, dict) and d.get("reason") == "exportSizeLimitExceeded" for d in details
+    ):
+        return True
+    return "too large to be exported" in (err.reason or "").lower()
 
 
 def assert_in_drive(file_meta: dict[str, Any], expected_drive_id: str) -> None:
@@ -97,9 +123,22 @@ class DriveClient:
             return cast("dict[str, Any]", resp)
 
         resp = await anyio.to_thread.run_sync(_call)
-        files = resp.get("files", [])
-        for f in files:  # defense-in-depth: drop any stray out-of-drive item
-            assert_in_drive(f, self.drive_id)
+        raw_files = resp.get("files", [])
+        files: list[dict[str, Any]] = []
+        for f in raw_files:
+            # corpora="drive"+driveId already restricts results to this drive; this loop is
+            # defense-in-depth. On a LIST endpoint, DROP a stray item (don't abort every good
+            # result) but log it so a real scoping breach can't hide silently. (Single-file
+            # get_metadata/read_file still RAISE — see assert_in_drive callers below.)
+            if f.get("driveId") == self.drive_id:
+                files.append(f)
+            else:
+                log.warning(
+                    "drive.search.dropped_out_of_drive_item",
+                    file_id=f.get("id"),
+                    found_drive_id=f.get("driveId"),
+                    expected_drive_id=self.drive_id,
+                )
         return {"files": files, "next_page_token": resp.get("nextPageToken")}
 
     async def get_metadata(self, file_id: str) -> dict[str, Any]:
@@ -138,11 +177,24 @@ class DriveClient:
     # --- per-format extraction (sync; run inside a worker thread) ---
     def _read_doc(self, file_id: str) -> str:
         svc = self._service("drive", "v3")
-        data = (
-            svc.files()
-            .export_media(fileId=file_id, mimeType="text/plain")
-            .execute(num_retries=self._retries)
-        )
+        try:
+            data = (
+                svc.files()
+                .export_media(fileId=file_id, mimeType="text/plain")
+                .execute(num_retries=self._retries)
+            )
+        except HttpError as err:
+            # Doc too large to export as text → stated placeholder, not a crash (AC11). Any other
+            # HTTP error (permission/boundary 403/404, etc.) must still propagate and refuse (AC10).
+            if _is_export_size_error(err):
+                log.warning(
+                    "drive.export_size_limit_exceeded",
+                    file_id=file_id,
+                    status=err.status_code,
+                    reason=err.reason,
+                )
+                return EXPORT_TOO_LARGE_PLACEHOLDER
+            raise
         return data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
 
     def _read_sheet(self, file_id: str, sheet: str | None, cell_range: str | None) -> str:
