@@ -13,6 +13,7 @@ from aretea_drive_mcp.audit import AuditMiddleware, configure_logging
 from aretea_drive_mcp.auth.provider import build_provider
 from aretea_drive_mcp.config import Settings, get_settings
 from aretea_drive_mcp.gdrive.client import DriveClient
+from aretea_drive_mcp.health import register_health
 from aretea_drive_mcp.toolsets import drive
 
 
@@ -33,4 +34,8 @@ def build_app(settings: Settings | None = None) -> FastMCP:
         num_retries=settings.drive_num_retries,
     )
     drive.register(app, client=client, max_read_chars=settings.max_read_chars)
+
+    # Unauthenticated deploy-time healthcheck (Railway healthcheckPath). Outside the auth/audit
+    # chain by construction — see health.py.
+    register_health(app)
     return app
