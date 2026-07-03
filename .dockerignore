@@ -12,3 +12,6 @@ tests
 docs
 prds
 *.md
+# Re-include README.md: hatchling reads it at build (pyproject `readme = "README.md"`).
+# Must come after `*.md` (last-match-wins). Works because README.md is at context root.
+!README.md
