@@ -272,3 +272,110 @@ Names only in `.env.example` — no values committed (NFR7).
   session-manager lifespan and the server silently won't serve. Use the separate init process above.
 - Volumes mount as **root**: either chown-at-start then drop privileges, or run root (acceptable for
   a single-tenant internal container — the real boundaries are SA membership + the identity gate).
+
+---
+
+## 10. CI/CD & release pipeline (`prd_02`)
+
+The connector ships through a gated, token-free pipeline: **PR → green CI → merge → Railway
+autodeploy → `/health` probe → live → `vX.Y.Z` tag + GitHub Release**. Two decoupled halves — CI
+runs in GitHub Actions; CD is Railway-native. They meet at **Wait for CI**.
+
+### 10.1 Health signal (`health.py` → `/health`)
+
+`register_health(app)` adds a FastMCP **`custom_route`** (`server.py` wires it after the toolset):
+
+```python
+@app.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def health(_request): return JSONResponse(health_payload())
+# {"status":"ok", "commit":$RAILWAY_GIT_COMMIT_SHA, "version":<floor>, "region":$RAILWAY_REPLICA_REGION}
+```
+
+- **Unauthenticated by construction (spike, resolved).** FastMCP wraps `RequireAuthMiddleware`
+  around **only** the `/mcp` route; custom routes are added to `server_routes` unwrapped. The global
+  `AuthenticationMiddleware` runs on every route but its `BearerAuthBackend.authenticate` **returns
+  `None`** on a missing/invalid token (never raises), so `/health` proceeds anonymously → 200. And
+  `AuditMiddleware` is a **tool-call** middleware (`on_call_tool`) — a plain GET is not a tool call,
+  so the org gate is never consulted. Proven in `tests/test_health.py` (auth stack present:
+  `/health`→200, `/mcp`→401). ⚠ Re-verify against the pinned fastmcp if the auth wiring changes.
+- **Reports "up," not "Drive works."** It never calls Google (would be flaky/rate-limited). Health
+  layering: fail-fast config at boot → `/health` (process up + config loaded) → **manual** claude.ai
+  web Drive-read smoke test. Different failure classes, each caught once.
+- **No parent wrapper app.** A Starlette/FastAPI wrapper is forbidden (shadows `http_app`'s
+  session-manager lifespan — §9). `custom_route` is the only sanctioned way to add `/health`.
+- Wired as `healthcheckPath: "/health"` in `railway.json`; a deployment that never returns 200 is
+  not routed traffic and is marked failed (AC4).
+
+### 10.2 Version identity
+
+`RAILWAY_GIT_COMMIT_SHA` (injected by native connect at build + runtime) is the source of truth,
+surfaced at `/health.commit`. The literal `vX.Y.Z` string is **not** in-container (`.dockerignore`
+drops `.git`, and Railway exposes no tag build-var), so the tag/Release is the **human label mapped
+from the SHA on GitHub**. `pyproject` `project.version` is a **floor** read via
+`importlib.metadata` (`__init__.py`) — never hand-duplicated, never bumped by the release job.
+
+### 10.3 CI (`.github/workflows/ci.yml`)
+
+One workflow, `on: push:[main]` **and** `on: pull_request`. Secret-free (uses the auto `GITHUB_TOKEN`).
+
+| Job | Does | Gate role |
+|---|---|---|
+| `check` | `ruff check` · `ruff format --check` · `mypy --strict` · `pytest` | required to merge (AC1) |
+| `docker` | `docker build` (no push) — catch Dockerfile breakage before Railway | required to merge |
+| `release` | `needs:[check,docker]`, **main-push only** — cut the tag + Release | see §10.5 |
+
+`concurrency` supersedes in-flight **PR** runs but never cancels a main run (a half-cut tag is worse
+than a redundant run). A red `check`/`docker` fails the workflow → Wait for CI leaves the deploy
+`SKIPPED` (AC5) and the `release` job never runs.
+
+### 10.4 CD — Railway native connect + Wait for CI
+
+No deploy step runs in Actions and **no `RAILWAY_TOKEN` lives in GitHub** (one fewer long-lived prod
+credential). Railway's GitHub App watches `main`; with **Wait for CI** on, the deploy holds in
+`WAITING` until this workflow succeeds, then builds the Dockerfile and probes `/health`. Brief
+downtime per deploy: the single attached volume forbids two concurrent deployments, so in-memory MCP
+sessions drop on every deploy (accepted for an internal connector — see PRD Non-Goals).
+
+### 10.5 Release automation — tag-only, **no write-back** (load-bearing)
+
+`python-semantic-release` (`[tool.semantic_release]` in `pyproject.toml`) derives the next SemVer
+from Conventional Commits and creates the **`vX.Y.Z` tag + GitHub Release only**. The action runs
+with `commit: false` (and `version_toml`/`version_variables` unset, so nothing is stamped):
+
+> **Invariant:** the release must never push a write-back commit to `main`. A bump commit would
+> (a) fire a *second* Railway autodeploy — a double deploy (AC9) — and (b) be rejected outright once
+> branch protection is on. Current version is read from the latest `vX.Y.Z` git **tag**, not source.
+
+Config: `allow_zero_version=true`, `major_on_zero=false` (stay on 0.x; `feat:`→minor, `fix:`→patch;
+`docs:`/`chore:` do not release). First automated release from a tagless history is `v0.1.0`
+(matches the floor); thereafter a `feat:` merge cuts `v0.2.0`, etc. `/health.commit` for a live
+deploy equals the commit of its Release (AC8) — "what's live == what was released."
+
+### 10.6 Rollback runbook (manual, no rebuild)
+
+Railway retains prior deployments; rollback re-points traffic at a known-good one without rebuilding.
+
+1. **Confirm the bad state:** `curl -s https://<PUBLIC_SERVER_URL>/health` — note the live `commit`.
+2. **Railway → the service → Deployments:** find the last-good deployment (its commit maps to a
+   `vX.Y.Z` Release on GitHub). Use its **⋯ → Redeploy** (a.k.a. "Rollback to this deployment").
+3. **Verify:** re-`curl` `/health` and confirm `commit` now equals the **prior** SHA (AC7). Confirm a
+   claude.ai web Drive read works (the manual smoke test).
+4. **Caveats to record every time:**
+   - Rolling back **code does not revert env-var / secret changes** — if the incident involved a var
+     edit, revert that separately in Railway.
+   - A change to the **on-disk storage format** (FastMCP token store on the volume) can break
+     rollback. Any format change needs a migration + compatibility note, and `init_db` must stay
+     idempotent and forward/backward-compatible.
+
+### 10.7 One-time operator setup (Railway / GitHub UI — not in this repo)
+
+These are console actions the repo cannot perform; do them once to activate the pipeline:
+
+- **Railway GitHub App:** grant repo access + accept permissions; connect the service source to the
+  repo; set trigger branch `main`; enable **Wait for CI**. Confirm the service builder flips
+  `RAILPACK → DOCKERFILE` (the committed `railway.json` takes effect).
+- **Branch protection on `main`:** require the `check` and `docker` status checks; require PRs.
+- **Env/secret parity:** ensure Railway has every var from `.env.example` (`PORT=8080`,
+  `PUBLIC_SERVER_URL` = exact deployed HTTPS URL, `STORAGE_DIR=/data/storage`, the fixed
+  `JWT_SIGNING_KEY` / `STORAGE_ENCRYPTION_KEY`) and a persistent volume at `/data`.
+- **Release job:** needs no secret beyond the auto `GITHUB_TOKEN` (used with `contents: write`).

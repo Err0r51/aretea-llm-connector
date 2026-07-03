@@ -17,7 +17,7 @@ uv sync --extra dev                                  # install incl. dev tools (
 uv run ruff check .                                  # lint
 uv run ruff format .                                 # format
 uv run mypy aretea_drive_mcp                         # types (strict)
-uv run --extra dev pytest -q                         # full suite (32 cases)
+uv run --extra dev pytest -q                         # full suite (39 cases)
 uv run --extra dev pytest tests/test_gate_identity.py::test_no_email_claim_raises_distinct_error_and_does_not_run_tool -q   # one test
 uv run --extra dev pytest -k "export_size or search_drop" -q          # by keyword
 ```
