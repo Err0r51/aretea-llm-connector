@@ -39,6 +39,16 @@ _COMMIT_ENV = "RAILWAY_GIT_COMMIT_SHA"
 _REGION_ENV = "RAILWAY_REPLICA_REGION"
 
 
+def _env_or_unknown(name: str) -> str:
+    """Return the env var's value, or ``"unknown"`` when it is absent **or blank**.
+
+    ``os.environ.get(name, "unknown")`` guards only the *absent* case; Railway can inject the var
+    as an empty string (e.g. a non-git-sourced deploy), which would surface a misleading blank
+    ``commit``/``region`` instead of the honest ``"unknown"`` the docstring promises.
+    """
+    return os.environ.get(name, "").strip() or "unknown"
+
+
 def health_payload() -> dict[str, str]:
     """The ``/health`` body. Pure + import-safe so it is unit-testable without an ASGI server.
 
@@ -48,9 +58,9 @@ def health_payload() -> dict[str, str]:
     """
     return {
         "status": "ok",
-        "commit": os.environ.get(_COMMIT_ENV, "unknown"),
+        "commit": _env_or_unknown(_COMMIT_ENV),
         "version": __version__,
-        "region": os.environ.get(_REGION_ENV, "unknown"),
+        "region": _env_or_unknown(_REGION_ENV),
     }
 
 

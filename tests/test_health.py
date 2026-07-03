@@ -43,6 +43,16 @@ def test_health_payload_falls_back_to_unknown(monkeypatch: pytest.MonkeyPatch) -
     assert payload["region"] == "unknown"
 
 
+def test_health_payload_treats_blank_env_as_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Railway can inject the var as an empty/whitespace string (e.g. a non-git-sourced deploy);
+    # os.environ.get(k, default) would let that blank through as a misleading commit/region.
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "")
+    monkeypatch.setenv("RAILWAY_REPLICA_REGION", "   ")
+    payload = health_payload()
+    assert payload["commit"] == "unknown"
+    assert payload["region"] == "unknown"
+
+
 def test_health_is_public_and_well_formed_on_bare_app() -> None:
     app = FastMCP(name="test")
     register_health(app)
