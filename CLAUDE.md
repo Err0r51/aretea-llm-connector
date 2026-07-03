@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Self-hosted MCP server (Python + FastMCP) giving Claude **web** read-only access to **one** curated
 Google Drive corpus. It is the first of several planned connectors (Slack/HubSpot/Granola next), so
 the auth + hosting pattern here is meant to be reused. The *what/why* live in
-`docs/prd_01_aretea_drive_mcp_connector_read_only_v1.md`; the *how* in `docs/ARCHITECTURE.md`. Read
+`prds/prd_01_aretea_drive_mcp_connector_read_only_v1.md`; the *how* in `docs/ARCHITECTURE.md`. Read
 the PRD before implementing feature work.
 
 ## Commands
@@ -87,9 +87,10 @@ container start because the volume is absent at build time.
   OAuth handshake and the Drive/Sheets/Slides reads are only validated live (PRD Phase 1 spike /
   Phase 4 web smoke test). Comments marked `⚠ verify at build` flag Google API method/field names
   and FastMCP kwargs that need checking against the pinned libs — respect them.
-- **Docs live in `docs/`**: PRDs (`prd_NN_…`, each with acceptance criteria mapped to tests) and
-  `ARCHITECTURE.md` (the ~1-page capability index — consult before adding cross-cutting infra like a
-  new auth flow or storage layer).
+- **PRDs live in `prds/`** (`prd_NN_…`, each with acceptance criteria mapped to tests); other docs
+  live in `docs/`, incl. `ARCHITECTURE.md` (the ~1-page capability index — consult before adding
+  cross-cutting infra like a new auth flow or storage layer). **Never delete a PRD** — keep every
+  `prd*` file in `prds/`; move or archive, never `git rm`, even a superseded draft.
 
 ## Railway deploy specifics (each cost a failed deploy to learn)
 
