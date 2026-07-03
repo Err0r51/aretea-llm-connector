@@ -73,3 +73,19 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.semantic_release]
+# Cut the `vX.Y.Z` tag + GitHub Release ONLY — never a write-back commit to source.
+# `version_toml` / `version_variables` are intentionally omitted (both default to `[]`), so PSR
+# stamps NOTHING: the current version is read from the latest matching git tag, the next is derived
+# from Conventional Commits since it. The no-write-back rule is LOAD-BEARING — a bump commit pushed
+# to `main` would (a) fire a second Railway autodeploy (double deploy, AC9) and (b) be rejected
+# outright once branch protection lands. `project.version` above is a floor for /health only; PSR
+# never bumps it. The GitHub Action enforces this at run time with `commit: false`.
+tag_format = "v{version}"
+allow_zero_version = true  # stay on 0.x while pre-1.0
+major_on_zero = false      # a breaking change on 0.x bumps the minor, not straight to 1.0.0
+build_command = ""         # a deployed service, not a published package — nothing to build
+
+[tool.semantic_release.branches.main]
+match = "main"  # release only from main (the push:[main] release job)

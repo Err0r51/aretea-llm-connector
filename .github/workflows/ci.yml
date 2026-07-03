@@ -1,0 +1,85 @@
+# CI gate + tag-only release for the Drive connector (PRD 3).
+#
+# One workflow, two triggers:
+#   - pull_request : the merge gate. Branch protection requires the `check` + `docker` jobs green.
+#   - push:[main]  : the release path. Same gate runs, THEN the `release` job cuts the version tag.
+#                    `on: push:[main]` is also what Railway's "Wait for CI" watches — it holds the
+#                    deploy in WAITING until this workflow succeeds, and marks it SKIPPED if it fails
+#                    (AC5). No deploy step lives here and NO `RAILWAY_TOKEN` is needed — CD is
+#                    Railway-native GitHub connect, token-free.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default; the release job elevates to `contents: write` locally.
+permissions:
+  contents: read
+
+concurrency:
+  # Supersede in-flight PR runs, but NEVER cancel a main run mid-release (a half-cut tag is worse
+  # than a redundant run).
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: lint · types · tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync (incl. dev extra)
+        run: uv sync --extra dev --frozen
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Mypy (strict)
+        run: uv run mypy aretea_drive_mcp
+      - name: Pytest
+        run: uv run pytest -q
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Catch Dockerfile breakage before Railway does — build only, never pushed anywhere.
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: false
+          tags: aretea-drive-mcp:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: tag + GitHub Release
+    needs: [check, docker]
+    # Only on a green push to main — never on PRs. A failed check/docker job leaves this un-run,
+    # so a red main push produces no tag and (via Wait for CI) no deploy.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # push the tag + create the GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # PSR needs full history + all tags to compute the next version
+      - name: Semantic release (tag + Release only, no write-back)
+        uses: python-semantic-release/python-semantic-release@v10.5.3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          commit: "false"      # LOAD-BEARING: no bump commit → no double deploy (AC9)
+          tag: "true"          # create vX.Y.Z on the released commit
+          push: "true"         # push that tag to the remote
+          vcs_release: "true"  # create the GitHub Release
+          changelog: "false"   # no CHANGELOG.md write-back; Release notes come from commit history
