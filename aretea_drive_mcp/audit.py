@@ -3,10 +3,11 @@
 Every tool call emits exactly one structured-JSON line to stdout (Railway captures it) — AC12:
 ``{ts, user, tool, args_summary, outcome, duration_ms}``. No file *contents* are ever logged.
 
-The middleware also enforces the post-mint domain gate (PRD A2 defense-in-depth): a session whose
-email is outside the allowed domain is refused before the tool runs, and the refusal is logged as
-``outcome="denied"``. This is "no data reachable," not "no token issued" — the latter is the
-Google-side Internal-app restriction, not code.
+The middleware also enforces the post-mint domain gate (PRD A2 defense-in-depth) before the tool
+runs, with two distinct, logged refusals: an outside-domain email → ``outcome="denied"``, and a
+token carrying no email claim at all → ``outcome="denied_no_email"`` (an auth/scope problem, kept
+separate so it can't hide as a domain mismatch). This is "no data reachable," not "no token
+issued" — the latter is the Google-side Internal-app restriction, not code.
 
 ⚠ ``get_access_token`` / ``MiddlewareContext`` field access is the documented FastMCP 3.x API;
 verify names against fastmcp 3.4.2 at build. The canonical home for the domain check may be a
@@ -42,15 +43,34 @@ def configure_logging() -> None:
     )
 
 
-def _current_user() -> str | None:
-    """Best-effort authenticated identity (email, else subject) for attribution."""
+def _get_claims() -> dict[str, Any]:
+    """Claims of the current authenticated token, or ``{}`` if there is none.
+
+    ``get_access_token`` failing is an auth-layer problem, not a per-user one — log it loudly
+    rather than swallowing it into a silent no-identity (which would look like a domain denial).
+    """
     try:
         token = get_access_token()
     except Exception:
-        return None
+        log.warning("auth.token_fetch_failed", exc_info=True)
+        return {}
     if token is None:
-        return None
-    claims: dict[str, Any] = getattr(token, "claims", {}) or {}
+        return {}
+    return getattr(token, "claims", {}) or {}
+
+
+def _gate_email(claims: dict[str, Any]) -> str | None:
+    """Email used for the org-domain gate decision — the email claim only, NEVER ``sub``.
+
+    ``sub`` is always present when validation succeeds (google.py), so falling back to it would
+    silently fail the ``@domain`` suffix match and deny the caller with a misleading "wrong domain"
+    error. Absence of ``email`` is a distinct condition the caller handles explicitly.
+    """
+    return claims.get("email")
+
+
+def _audit_user(claims: dict[str, Any]) -> str | None:
+    """Best-effort identity (email, else subject) for the audit line's ``user`` field only."""
     return claims.get("email") or claims.get("sub")
 
 
@@ -79,10 +99,27 @@ class AuditMiddleware(Middleware):
         message = getattr(context, "message", None)
         tool = getattr(message, "name", "<unknown>")
         args_summary = _summarize_args(getattr(message, "arguments", None))
-        user = _current_user()
+        claims = _get_claims()
+        user = _audit_user(claims)  # attribution only (email else sub)
+        gate_email = _gate_email(claims)  # decision only (email, no sub fallback)
 
-        # Post-mint org gate (defense-in-depth): outside-domain → refuse, still logged.
-        if not email_in_domain(user, self._allowed_domain):
+        # Post-mint org gate (defense-in-depth), two distinct refusals — both logged:
+        #   1. no email claim → can't evaluate the gate at all (auth/scope problem), fail loud.
+        if gate_email is None:
+            log.info(
+                "tool_call",
+                user=user,
+                tool=tool,
+                args_summary=args_summary,
+                outcome="denied_no_email",
+                duration_ms=0,
+            )
+            raise ToolError(
+                "authenticated identity has no email claim; cannot evaluate org domain gate "
+                "— check auth email scope/provider"
+            )
+        #   2. email present but outside the allowed domain → ordinary domain refusal.
+        if not email_in_domain(gate_email, self._allowed_domain):
             log.info(
                 "tool_call",
                 user=user,

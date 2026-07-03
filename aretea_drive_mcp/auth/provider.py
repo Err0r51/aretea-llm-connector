@@ -45,6 +45,13 @@ def email_in_domain(email: str | None, allowed_domain: str) -> bool:
 
 def build_provider(settings: Settings) -> GoogleProvider:
     """Construct the identity-only Google auth provider with persistent, encrypted storage."""
+    # Boot-time guard: the org gate reads the token's `email` claim, which only exists because we
+    # request the email scope. Fail loudly at startup on the one edit that would drop it, rather
+    # than denying every tool call at runtime with a misleading "no email claim" error.
+    if "email" not in IDENTITY_SCOPES:
+        raise RuntimeError(
+            "identity scopes must include 'email' — the org domain gate depends on the email claim"
+        )
     return GoogleProvider(
         client_id=settings.google_oauth_client_id,
         client_secret=settings.google_oauth_client_secret.get_secret_value(),
