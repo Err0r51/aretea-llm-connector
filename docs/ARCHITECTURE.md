@@ -1,6 +1,6 @@
 # Aretea Drive MCP Connector — Architecture (v1, read-only)
 
-`Status:` Draft · `Derived from:` `prds/prd_01` · `Last updated:` 2 July 2026
+`Status:` Draft · `Derived from:` [`prd_01`](prd_01_aretea_drive_mcp_connector_read_only_v1.md) · `Last updated:` 2 July 2026
 
 The *what/why* live in the PRD. This is the *how*: the module contracts, data model, request
 path, and failure behavior an implementer builds against. Product governance (sign-off gates,

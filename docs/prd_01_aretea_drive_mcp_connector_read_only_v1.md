@@ -1,10 +1,10 @@
-# PRD 2: Aretea Drive MCP connector read-only v1
+# PRD 01: Aretea Drive MCP connector read-only v1
 
 > **Status:** Active — Last refreshed: 2026-07-02
 
-_Consolidates and **amends** the initial draft (root `prd-1`) into the house style. The one
+_Consolidates and **amends** an earlier read-only draft into the house style. The one
 material change from that draft is the FR2 amendment below (per-user identity), which needs
-owner sign-off. Implementation detail (the *how*) lives in `docs/ARCHITECTURE.md`._
+owner sign-off. Implementation detail (the *how*) lives in `ARCHITECTURE.md`._
 
 ## Problem
 
@@ -119,7 +119,7 @@ client libs — see `ARCHITECTURE.md`) contradicts items written as *locked*. Ea
 ### Design details
 
 Full architecture — flows, the reversal from the earlier auto-approve design, scope rationale,
-Railway/secret specifics, verification matrix — is in **`docs/ARCHITECTURE.md`**. Summary:
+Railway/secret specifics, verification matrix — is in **`ARCHITECTURE.md`**. Summary:
 
 - **Client hop:** claude.ai ↔ our FastMCP server over Streamable HTTP, OAuth 2.1 (PKCE-S256).
   `OAuthProxy` fronts Google Workspace OIDC; only an `@aretea-group.com` identity completes the
@@ -202,7 +202,7 @@ Gate-first — the OAuth handshake is the load-bearing step; prove it before bui
 
 ## Open questions
 
-- **FR2 amendment sign-off** (owner: Frederik) — surfaced in `docs/ARCHITECTURE.md` §0. Blocks
+- **FR2 amendment sign-off** (owner: Frederik) — surfaced in `ARCHITECTURE.md` §0. Blocks
   treating FR2′ as the requirement of record.
 - **Per-user client-hop flow** — does claude.ai run per-user OAuth exposing a distinct identity to
   the AS? Resolved by the Phase-1 spike (`ARCHITECTURE.md` §2.2). Determines whether attribution
@@ -218,6 +218,5 @@ Gate-first — the OAuth handshake is the load-bearing step; prove it before bui
 
 ## References
 
-- Root `prd-1` — initial draft this PRD consolidates and amends.
-- `docs/ARCHITECTURE.md` — concrete technical design (the *how*), incl. the verification matrix,
+- `ARCHITECTURE.md` — concrete technical design (the *how*), incl. the verification matrix,
   the FR2 amendment (§0), and the spike objectives (§8.1).
