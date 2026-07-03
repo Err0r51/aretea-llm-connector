@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "python -m aretea_drive_mcp.init_db && uvicorn aretea_drive_mcp.main:app --host 0.0.0.0 --port $PORT",
+    "startCommand": "/bin/sh -c \"python -m aretea_drive_mcp.init_db && exec uvicorn aretea_drive_mcp.main:app --host 0.0.0.0 --port $PORT\"",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3,
     "multiRegionConfig": {
