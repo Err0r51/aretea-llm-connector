@@ -57,9 +57,13 @@ def register(app: FastMCP, *, client: DriveClient, max_read_chars: int) -> None:
         """Read a file's text content at basic fidelity.
 
         Docs → plain text; Sheets → cell values (no formulas), optionally scoped by `sheet` or A1
-        `cell_range`; Slides → per-slide text (no layout); plain-text files → their text; binaries
-        (PDF/Office) → a placeholder note (extraction is a v1 fast-follow). Large output is
-        truncated with an explicit note (`truncated: true`); page with `cell_range`/`sheet`.
+        `cell_range`; Slides → per-slide text (no layout). PDFs → text-layer text; `.docx` →
+        paragraph + table text; `.xlsx` → cell values (never formulas — cached values only, so a
+        sheet never opened in a spreadsheet app can show blank formula cells); `.pptx` → per-slide
+        text; plain-text files → their text. Scanned/no-text-layer PDFs, encrypted or corrupt files,
+        legacy `.doc/.xls/.ppt`, oversized files, and other binaries → a stated placeholder that
+        says why (never a silent empty read). Large output is truncated with an explicit note
+        (`truncated: true`); page with `cell_range`/`sheet`.
         """
         result = await client.read_file(file_id, sheet=sheet, cell_range=cell_range)
         content, was_truncated = truncate(result["content"], max_read_chars)

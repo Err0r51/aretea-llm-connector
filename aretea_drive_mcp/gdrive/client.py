@@ -11,11 +11,14 @@ to a worker thread via ``anyio.to_thread.run_sync``; each threaded call builds i
 on a fresh authorized http. The credentials object is shared (that is safe).
 
 ⚠ Method/field names (``export_media``, ``get_media``, Slides shape walk) are written to the current
-Google API and unit-tested against ``HttpMock``; verify against the live API at build.
+Google API. The pure per-format extractors in ``extract.py`` are unit-tested against real fixture
+files, but the Drive method/field names themselves are only ``⚠ verify at build`` — no test
+exercises the live Drive API.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 
 import anyio
@@ -26,6 +29,13 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from aretea_drive_mcp.gdrive.credentials import build_credentials
+from aretea_drive_mcp.gdrive.extract import (
+    ExtractionError,
+    extract_docx,
+    extract_pdf,
+    extract_pptx,
+    extract_xlsx,
+)
 
 log = structlog.get_logger("gdrive.client")
 
@@ -33,6 +43,32 @@ log = structlog.get_logger("gdrive.client")
 MIME_DOC = "application/vnd.google-apps.document"
 MIME_SHEET = "application/vnd.google-apps.spreadsheet"
 MIME_SLIDES = "application/vnd.google-apps.presentation"
+
+# Modern OOXML Office types → pure in-process extractors (PRD 5). Binary content read via get_media.
+MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+MIME_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+# mime → pure extractor. Each takes ``(data: bytes, *, max_uncompressed_bytes: int) -> str`` and
+# raises ExtractionError for expected-degraded cases; ``application/pdf`` ignores the ceiling kwarg.
+EXTRACTORS: dict[str, Callable[..., str]] = {
+    "application/pdf": extract_pdf,
+    MIME_DOCX: extract_docx,
+    MIME_XLSX: extract_xlsx,
+    MIME_PPTX: extract_pptx,
+}
+# mime → log-outcome token for a successful extraction (observability; PRD 5).
+_EXTRACT_OUTCOME = {
+    "application/pdf": "pdf_text",
+    MIME_DOCX: "docx",
+    MIME_XLSX: "xlsx",
+    MIME_PPTX: "pptx",
+}
+
+# Pre-2007 OLE binary Office formats — unsupported in v1 (need LibreOffice/antiword); placeholdered.
+LEGACY_OLE_MIMES = frozenset(
+    {"application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"}
+)
 
 # Fields fetched for every file — driveId is required for the boundary assertion.
 FILE_FIELDS = (
@@ -48,6 +84,20 @@ EXPORT_TOO_LARGE_PLACEHOLDER = (
     "[truncated — this Google Doc exceeds Drive's 10 MB plain-text export limit and could not be "
     "exported as text; open it in Google Docs to read the full content]"
 )
+
+# Stated placeholders for the binary-extraction paths (PRD 5) — never silent (AC11 spirit).
+LEGACY_PLACEHOLDER = (
+    "[legacy Office format (.doc/.xls/.ppt) unsupported — re-save as .docx/.xlsx/.pptx to extract]"
+)
+SIZE_UNKNOWN_PLACEHOLDER = (
+    "[file size is unknown — refusing to download it for extraction (fail-safe)]"
+)
+
+
+def _oversize_placeholder(cap_bytes: int) -> str:
+    return (
+        f"[file exceeds the {cap_bytes // (1024 * 1024)}-MB extraction size limit — not downloaded]"
+    )
 
 
 class DriveBoundaryError(RuntimeError):
@@ -85,13 +135,43 @@ def _is_text_mime(mime: str) -> bool:
     }
 
 
+def _needs_download(mime: str) -> bool:
+    """True for the get_media reads (plain text + binary extractors) — the only paths that pull an
+    unbounded raw blob, so the input-size guard applies to exactly these. Native Google types
+    (Doc/Sheet/Slides) and unhandled binaries never reach a get_media download."""
+    return _is_text_mime(mime) or mime in EXTRACTORS
+
+
+def _oversize_verdict(file_meta: dict[str, Any], mime: str, cap_bytes: int) -> str | None:
+    """Return a stated placeholder to refuse a download with, or None to proceed. Pure (AC5/AC6).
+
+    Applied only to get_media paths. Drive reports ``size`` as a string; absent/unparseable → fail
+    safe (refuse), since a get_media on the single worker has no other size backstop."""
+    if not _needs_download(mime):
+        return None
+    try:
+        size = int(file_meta.get("size"))  # type: ignore[arg-type]  # None → TypeError below
+    except (TypeError, ValueError):
+        return SIZE_UNKNOWN_PLACEHOLDER
+    return _oversize_placeholder(cap_bytes) if size > cap_bytes else None
+
+
 class DriveClient:
     """Read-only Google Drive access pinned to a single Shared Drive."""
 
-    def __init__(self, sa_key_json: str, drive_id: str, num_retries: int = 5) -> None:
+    def __init__(
+        self,
+        sa_key_json: str,
+        drive_id: str,
+        num_retries: int = 5,
+        max_input_bytes: int = 52_428_800,
+        max_uncompressed_bytes: int = 314_572_800,
+    ) -> None:
         self._creds = build_credentials(sa_key_json)
         self.drive_id = drive_id
         self._retries = num_retries
+        self._max_input_bytes = max_input_bytes
+        self._max_uncompressed_bytes = max_uncompressed_bytes
 
     # --- service builders (called inside worker threads; fresh http each time) ---
     def _http(self) -> AuthorizedHttp:
@@ -158,9 +238,16 @@ class DriveClient:
     async def read_file(
         self, file_id: str, sheet: str | None = None, cell_range: str | None = None
     ) -> dict[str, Any]:
-        """Return ``{mime_type, content}`` (str content). Truncation is applied by the tool."""
+        """Return ``{mime_type, content, name}`` (str content). Tool applies truncation."""
         meta = await self.get_metadata(file_id)  # asserts in-drive before any content is fetched
         mime = meta.get("mimeType", "")
+
+        # Input-size guard (PRD 5): refuse an oversized/unknown-size blob BEFORE downloading it, so
+        # a large file can't OOM the single worker. Runs on the event loop — no offload, no bytes.
+        verdict = _oversize_verdict(meta, mime, self._max_input_bytes)
+        if verdict is not None:
+            log.warning("drive.extract", file_id=file_id, mime=mime, outcome="oversize_refused")
+            return {"mime_type": mime, "content": verdict, "name": meta.get("name")}
 
         def _extract() -> str:
             if mime == MIME_DOC:
@@ -244,13 +331,35 @@ class DriveClient:
                         lines.append(content.rstrip("\n"))
         return "\n".join(lines)
 
-    def _read_regular(self, file_id: str, mime: str) -> str:
-        if not _is_text_mime(mime):
-            return BINARY_PLACEHOLDER
+    def _get_media_bytes(self, file_id: str) -> bytes:
+        """Download a file's raw bytes via get_media (read-only). Any HttpError (permission/boundary
+        403/404) propagates unchanged — degradation must never mask a real access failure (AC15)."""
         svc = self._service("drive", "v3")
         data = (
             svc.files()
             .get_media(fileId=file_id, supportsAllDrives=True)
             .execute(num_retries=self._retries)
         )
-        return data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
+        return data if isinstance(data, bytes) else bytes(data)
+
+    def _read_regular(self, file_id: str, mime: str) -> str:
+        """Sync dispatch for non-native reads: plain text, PDF/OOXML extraction, or a stated
+        placeholder. Synchronous with the download isolated in ``_get_media_bytes`` so unit tests
+        drive the registry wiring and error propagation directly. Runs inside read_file's offload.
+        """
+        if _is_text_mime(mime):
+            return self._get_media_bytes(file_id).decode("utf-8", "replace")
+        if mime in LEGACY_OLE_MIMES:
+            log.info("drive.extract", file_id=file_id, mime=mime, outcome="legacy_unsupported")
+            return LEGACY_PLACEHOLDER
+        extractor = EXTRACTORS.get(mime)
+        if extractor is None:
+            return BINARY_PLACEHOLDER
+        data = self._get_media_bytes(file_id)  # HttpError propagates (AC15) — outside the try below
+        try:
+            text = extractor(data, max_uncompressed_bytes=self._max_uncompressed_bytes)
+        except ExtractionError as err:
+            log.warning("drive.extract", file_id=file_id, mime=mime, outcome=err.reason)
+            return err.placeholder
+        log.info("drive.extract", file_id=file_id, mime=mime, outcome=_EXTRACT_OUTCOME[mime])
+        return text

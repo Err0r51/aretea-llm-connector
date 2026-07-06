@@ -63,6 +63,19 @@ class Settings(BaseSettings):
     drive_num_retries: int = Field(
         default=5, description="google-api-python-client execute(num_retries=) for 429/5xx backoff."
     )
+    max_input_bytes: int = Field(
+        default=52_428_800,  # 50 MiB
+        description=(
+            "Refuse-before-download cap (bytes) for get_media extraction paths (PDF/OOXML/text). "
+            "The single worker has no other backstop against an oversized blob (PRD 5)."
+        ),
+    )
+    max_uncompressed_bytes: int = Field(
+        default=314_572_800,  # 300 MiB
+        description=(
+            "OOXML decompression-bomb ceiling (bytes): total uncompressed zip size before refusal."
+        ),
+    )
 
 
 @functools.lru_cache(maxsize=1)

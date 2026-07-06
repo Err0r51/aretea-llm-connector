@@ -25,6 +25,16 @@ dependencies = [
     "structlog>=25.1",
     # --- ASGI server ---
     "uvicorn[standard]>=0.35",
+    # --- binary text extraction (PRD 5: text-layer PDF + modern OOXML Office) ---
+    # In-process, read-only parse of get_media bytes (no Google-side conversion). pypdf is BSD +
+    # pure-Python (deliberately NOT PyMuPDF/fitz — AGPL). python-docx (imports `docx`) and
+    # python-pptx (imports `pptx`) pull lxml; python-pptx also pulls Pillow. openpyxl is pure-Python.
+    # All four ship cp312 manylinux wheels, so no build toolchain — ⚠ verify wheel resolution on the
+    # Railway Metal builder at build (python3.12-slim-trixie, no apt, no RUN --mount).
+    "pypdf>=5.1,<6",
+    "python-docx>=1.1,<2",
+    "openpyxl>=3.1,<4",
+    "python-pptx>=1.0,<2",
 ]
 
 [project.optional-dependencies]
@@ -64,9 +74,20 @@ ignore = ["S101"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
-# google-api-python-client / httplib2 ship partial or no stubs.
+# google-api-python-client / httplib2 ship partial or no stubs; the extraction libs (docx/pptx) ship
+# none either. openpyxl/pypdf ship py.typed on recent versions, but list them here harmlessly so a
+# pinned-version downgrade can't break the strict build.
 [[tool.mypy.overrides]]
-module = ["googleapiclient.*", "google_auth_httplib2.*", "httplib2.*", "key_value.*"]
+module = [
+    "googleapiclient.*",
+    "google_auth_httplib2.*",
+    "httplib2.*",
+    "key_value.*",
+    "pypdf.*",
+    "docx.*",
+    "pptx.*",
+    "openpyxl.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

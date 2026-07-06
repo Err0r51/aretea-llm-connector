@@ -32,6 +32,8 @@ def build_app(settings: Settings | None = None) -> FastMCP:
         sa_key_json=settings.google_sa_key_json.get_secret_value(),
         drive_id=settings.ai_visible_drive_id,
         num_retries=settings.drive_num_retries,
+        max_input_bytes=settings.max_input_bytes,
+        max_uncompressed_bytes=settings.max_uncompressed_bytes,
     )
     drive.register(app, client=client, max_read_chars=settings.max_read_chars)
 
