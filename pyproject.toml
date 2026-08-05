@@ -14,7 +14,7 @@ dependencies = [
     # AsyncKeyValue storage backend for FastMCP client_storage (FileTreeStore on the Railway volume).
     "py-key-value-aio>=0.4.4,<0.5",
     # Fernet at-rest encryption for the token store (imported directly in auth/store.py).
-    "cryptography>=44",
+    "cryptography>=50.0.0",
     # --- Drive hop (service account, read-only) ---
     "google-api-python-client>=2.198,<3",
     "google-auth>=2.55,<3",
