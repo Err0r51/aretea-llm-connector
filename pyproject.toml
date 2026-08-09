@@ -31,7 +31,7 @@ dependencies = [
     # python-pptx (imports `pptx`) pull lxml; python-pptx also pulls Pillow. openpyxl is pure-Python.
     # All four ship cp312 manylinux wheels, so no build toolchain — ⚠ verify wheel resolution on the
     # Railway Metal builder at build (python3.12-slim-trixie, no apt, no RUN --mount).
-    "pypdf>=5.1,<6",
+    "pypdf>=6.15.0,<7",
     "python-docx>=1.1,<2",
     "openpyxl>=3.1,<4",
     "python-pptx>=1.0,<2",
